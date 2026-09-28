@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "industry-graph-mcp": {
+      "command": "D:\\anaconda3\\python.exe",
+      "args": ["-m", "industry_graph_mcp", "mcp"],
+      "env": {
+        "INDUSTRY_GRAPH_MCP_HOME": "D:\\industry-graph-mcp"
+      }
+    }
+  }
+}

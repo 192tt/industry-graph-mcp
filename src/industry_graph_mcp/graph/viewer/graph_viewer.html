@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>产业图谱查看器 (SQLite 平替)</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #3d8bfd;
+      --edge: #5a6a82;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: radial-gradient(1200px 600px at 20% -10%, #1b2a44, var(--bg));
+      color: var(--text);
+      min-height: 100vh;
+    }
+    header {
+      padding: 16px 24px;
+      border-bottom: 1px solid #243044;
+      display: flex;
+      gap: 16px;
+      align-items: baseline;
+      flex-wrap: wrap;
+    }
+    h1 { font-size: 18px; margin: 0; font-weight: 600; }
+    .meta { color: var(--muted); font-size: 13px; }
+    #wrap {
+      display: grid;
+      grid-template-columns: 280px 1fr;
+      height: calc(100vh - 58px);
+    }
+    aside {
+      border-right: 1px solid #243044;
+      background: rgba(26, 35, 50, 0.85);
+      overflow: auto;
+      padding: 12px;
+    }
+    aside input {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #334155;
+      background: #0f172a;
+      color: var(--text);
+      margin-bottom: 10px;
+    }
+    .node-item {
+      padding: 8px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 13px;
+      border: 1px solid transparent;
+    }
+    .node-item:hover, .node-item.active {
+      background: #243044;
+      border-color: #334155;
+    }
+    main { position: relative; overflow: hidden; }
+    canvas { width: 100%; height: 100%; display: block; }
+    #detail {
+      position: absolute;
+      right: 16px;
+      top: 16px;
+      width: 320px;
+      max-height: calc(100% - 32px);
+      overflow: auto;
+      background: var(--panel);
+      border: 1px solid #334155;
+      border-radius: 12px;
+      padding: 14px;
+      font-size: 13px;
+      display: none;
+    }
+    #detail h2 { margin: 0 0 8px; font-size: 15px; }
+    #detail pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--muted);
+      margin: 0;
+    }
+    .empty { color: var(--muted); padding: 24px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>产业图谱查看器</h1>
+    <div class="meta" id="stats">加载中…</div>
+  </header>
+  <div id="wrap">
+    <aside>
+      <input id="filter" placeholder="筛选企业名称…" />
+      <div id="list"></div>
+    </aside>
+    <main>
+      <canvas id="cv"></canvas>
+      <div id="detail"></div>
+    </main>
+  </div>
+  <script>
+    async function loadData() {
+      try {
+        const res = await fetch("./graph_data.json", { cache: "no-store" });
+        if (!res.ok) throw new Error("无法读取 graph_data.json，请先调用 graph_open_viewer");
+        return await res.json();
+      } catch (e) {
+        document.getElementById("stats").textContent = String(e);
+        return { nodes: [], edges: [] };
+      }
+    }
+
+    function layout(nodes) {
+      const n = nodes.length || 1;
+      const cx = 0, cy = 0, r = Math.max(180, n * 12);
+      return nodes.map((node, i) => {
+        const a = (i / n) * Math.PI * 2;
+        return { ...node, x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r };
+      });
+    }
+
+    function render(data) {
+      const canvas = document.getElementById("cv");
+      const ctx = canvas.getContext("2d");
+      const dpr = window.devicePixelRatio || 1;
+      const rect = canvas.parentElement.getBoundingClientRect();
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      let nodes = layout(data.nodes || []);
+      const edges = data.edges || [];
+      const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
+
+      let scale = 1, ox = rect.width / 2, oy = rect.height / 2;
+      let selected = null;
+
+      function draw() {
+        ctx.clearRect(0, 0, rect.width, rect.height);
+        ctx.save();
+        ctx.translate(ox, oy);
+        ctx.scale(scale, scale);
+
+        ctx.strokeStyle = "#5a6a82";
+        ctx.lineWidth = 1 / scale;
+        for (const e of edges) {
+          const a = byId[e.source_id], b = byId[e.target_id];
+          if (!a || !b) continue;
+          ctx.beginPath();
+          ctx.moveTo(a.x, a.y);
+          ctx.lineTo(b.x, b.y);
+          ctx.stroke();
+        }
+
+        for (const n of nodes) {
+          const active = selected && selected.id === n.id;
+          ctx.beginPath();
+          ctx.arc(n.x, n.y, active ? 10 : 7, 0, Math.PI * 2);
+          ctx.fillStyle = active ? "#3d8bfd" : "#94a3b8";
+          ctx.fill();
+          ctx.fillStyle = "#e7ecf3";
+          ctx.font = `${12 / scale}px sans-serif`;
+          const label = (n.properties && (n.properties.name || n.id)) || n.id;
+          ctx.fillText(String(label).slice(0, 18), n.x + 12, n.y + 4);
+        }
+        ctx.restore();
+      }
+
+      function showDetail(n) {
+        const el = document.getElementById("detail");
+        if (!n) { el.style.display = "none"; return; }
+        el.style.display = "block";
+        el.innerHTML = `<h2>${(n.properties && n.properties.name) || n.id}</h2><pre>${JSON.stringify(n, null, 2)}</pre>`;
+      }
+
+      function hit(mx, my) {
+        const x = (mx - ox) / scale;
+        const y = (my - oy) / scale;
+        for (const n of nodes) {
+          const dx = n.x - x, dy = n.y - y;
+          if (dx * dx + dy * dy < 14 * 14) return n;
+        }
+        return null;
+      }
+
+      canvas.onmousedown = (ev) => {
+        const n = hit(ev.offsetX, ev.offsetY);
+        selected = n;
+        showDetail(n);
+        draw();
+      };
+      canvas.onwheel = (ev) => {
+        ev.preventDefault();
+        const delta = ev.deltaY > 0 ? 0.9 : 1.1;
+        scale = Math.min(4, Math.max(0.2, scale * delta));
+        draw();
+      };
+
+      const list = document.getElementById("list");
+      const filter = document.getElementById("filter");
+      function refreshList() {
+        const q = filter.value.trim();
+        list.innerHTML = "";
+        for (const n of nodes) {
+          const name = (n.properties && n.properties.name) || n.id;
+          if (q && !String(name).includes(q)) continue;
+          const div = document.createElement("div");
+          div.className = "node-item" + (selected && selected.id === n.id ? " active" : "");
+          div.textContent = name;
+          div.onclick = () => { selected = n; showDetail(n); refreshList(); draw(); };
+          list.appendChild(div);
+        }
+      }
+      filter.oninput = refreshList;
+
+      document.getElementById("stats").textContent =
+        `backend=${data.backend || "?"} · nodes=${nodes.length} · edges=${edges.length} · scope=${data.scope || "*"}`;
+      refreshList();
+      draw();
+      window.addEventListener("resize", () => location.reload());
+    }
+
+    loadData().then(render);
+  </script>
+</body>
+</html>
