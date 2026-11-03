@@ -1,8 +1,8 @@
 ---
 name: industry-graph-research
 description: >
-  Local industry knowledge-graph survey. Maximize public company coverage,
-  enrich fields, then generate Markdown reports: 产业政策解读 + 产业样本洞察.
+  Local industry knowledge-graph survey. Discover companies, enrich full profiles
+  on ingest, export Beijing-style Chinese CSV, then write policy+insight reports.
 ---
 
 # 产业图谱调研 Skill
@@ -10,32 +10,22 @@ description: >
 ## 目标
 
 1. **尽可能多**入库公开源企业  
-2. 补全 **sub_industry / role**  
-3. **`generate_insight_report`** → Markdown 主报告（政策解读模板 + 产业洞察）
+2. **入库时就补全档案**：电话、信用代码、法人、成立日期、注册资本、地址、产品、专利、资质等（公开网页能拿到的）  
+3. 同步写出标准中文表头 CSV：`data/csv/{scope}.csv`  
+4. **`generate_insight_report`** → Markdown 主报告（政策解读 + 产业洞察）
 
 ## 流程
 
-1. `survey_plan_tool` → `discover_companies(maximize=True)` → `graph_upsert_companies_batch`  
-2. 缺字段：`graph_enrich_fields(scope)`  
-3. 可选：`search_policies` 后把结果传入 `policies_json`  
-4. **`generate_insight_report(scope, region, industry)`** → `REPORT.md`
+1. `survey_plan_tool` → `discover_companies(maximize=True)`  
+2. `graph_upsert_companies_batch(..., enrich_profile=True)`（默认开启：一家企业尽量补全字段）  
+3. 旧数据：反复 `enrich_company_profiles(scope, limit=50)` 直到 `updated=0`  
+4. `graph_export_csv(scope)` 可随时重导 CSV  
+5. `generate_insight_report(scope, region, industry)` → `REPORT.md`
 
-## 报告模板（契约）
+## 标准 CSV 表头
 
-融合国内产业政策解读 + 产业/招商研究常用模块：
-
-0. 执行摘要与口径  
-1. 政策概述（机关/文件/链接/摘要表）  
-2. 政策背景与意图（Why）  
-3. 政策核心内容（措施/目标/支持/约束）  
-4. 区域产业样本全景（统计图 + Mermaid + 知识图谱）  
-5. 影响分析（政策 × 样本细分/企业/空间）  
-6. 代表企业与赛道速览  
-7. 应对建议（战略/行动/风险/下一步）  
-附录：方法、口径、政策清单  
-
-产物：`D:\industry-graph-mcp\reports\{scope}\*_insight\REPORT.md`
+序号、企业名称、联系电话、统一社会信用代码、法人、成立日期、注册资本(万)、所属区县、注册街道、注册地址、核心技术/产品/服务、产业链、细分小类、所获专利、单位资质、获得荣誉、企业风险、分类理由、数据来源、筛选标记
 
 ## 口径
 
-公开检索 ≠ 工商全量；政策摘要须核对原文；名称推断 ≠ 官方分类。
+公开检索 ≠ 工商全量 / 付费企业库；字段可能仍为空；政策摘要须核对原文。

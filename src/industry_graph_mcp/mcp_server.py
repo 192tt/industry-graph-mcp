@@ -29,6 +29,8 @@ mcp = FastMCP(
         "用户要求尽可能多的企业：必须用 discover_companies(maximize=True, max_companies=500+)，"
         "批量入库后若还能搜到新名就继续，不要在几十家时停止。"
         "批量高新名单常缺细分/角色：入库时自动补全；也可调用 graph_enrich_fields(scope) 回写。"
+        "入库默认 enrich_profile=True：公开检索补电话/信用代码/法人/地址/产品等标准字段，并写 data/csv/{scope}.csv。"
+        "旧数据继续补：enrich_company_profiles(scope, limit=50) 可反复调用直到补完。"
         "洞察报告主交付物是 Markdown（reports/.../REPORT.md），用 generate_insight_report："
         "模板=国内产业政策解读（概述/背景/内容/影响/建议）+ 区域产业样本洞察（统计图/图谱/企业）。"
         "无 Neo4j 时使用 SQLite 平替。详见 SKILL.md。"
@@ -91,8 +93,10 @@ def graph_upsert_companies_batch(
     companies_json: str,
     scope: str = "default",
     labels_csv: str = "Company",
+    enrich_profile: bool = True,
+    profile_fetch_pages: int = 1,
 ) -> dict[str, Any]:
-    """Batch upsert companies. companies_json: JSON array of {name|id, properties?}."""
+    """Batch upsert companies and (by default) publicly enrich full profile fields + rewrite CSV."""
     items = json.loads(companies_json or "[]")
     if not isinstance(items, list):
         return {"error": "companies_json must be a JSON array"}
@@ -100,7 +104,16 @@ def graph_upsert_companies_batch(
     store = _store()
     ok = 0
     skipped = 0
+    profiled = 0
     try:
+        from industry_graph_mcp.company_profile import enrich_company_profile
+        from industry_graph_mcp.enrich import enrich_company_props
+        from industry_graph_mcp.schema import normalize_props
+
+        region_hint = ""
+        industry_hint = "科技"
+        if "_" in scope:
+            region_hint, industry_hint = scope.split("_", 1)
         for item in items:
             if isinstance(item, str):
                 name = item.strip()
@@ -118,19 +131,34 @@ def graph_upsert_companies_batch(
             if not name:
                 skipped += 1
                 continue
-            # Bulk high-tech lists often only have region+industry; fill sub/role by name
-            from industry_graph_mcp.enrich import enrich_company_props
-
-            region_hint = ""
-            industry_hint = "科技"
-            if "_" in scope:
-                region_hint, industry_hint = scope.split("_", 1)
-            props = enrich_company_props(
-                name, props, default_region=region_hint, default_industry=industry_hint or "科技"
-            )
+            props = normalize_props(props)
+            if enrich_profile:
+                props = enrich_company_profile(
+                    name,
+                    props,
+                    region=region_hint,
+                    industry=industry_hint or "科技",
+                    fetch_pages=profile_fetch_pages,
+                )
+                profiled += 1
+            else:
+                props = enrich_company_props(
+                    name, props, default_region=region_hint, default_industry=industry_hint or "科技"
+                )
             store.upsert_node(name, labels=labels, properties=props, scope=scope)
             ok += 1
-        return {"imported": ok, "skipped": skipped, "scope": scope, "stats": store.stats(scope)}
+        from industry_graph_mcp.csv_export import export_scope_csv
+
+        csv_meta = export_scope_csv(store, scope) if ok else None
+        return {
+            "imported": ok,
+            "skipped": skipped,
+            "profiled": profiled,
+            "enrich_profile": enrich_profile,
+            "scope": scope,
+            "stats": store.stats(scope),
+            "csv": csv_meta,
+        }
     finally:
         store.close()
 
@@ -150,7 +178,7 @@ def graph_enrich_fields(
         default_region, default_industry = scope.split("_", 1)
     store = _store()
     try:
-        return enrich_scope_companies(
+        result = enrich_scope_companies(
             store,
             scope=scope,
             write_back=write_back,
@@ -158,6 +186,58 @@ def graph_enrich_fields(
             default_region=default_region,
             default_industry=default_industry or "科技",
         )
+        if write_back:
+            from industry_graph_mcp.csv_export import export_scope_csv
+
+            result["csv"] = export_scope_csv(store, scope)
+        return result
+    finally:
+        store.close()
+
+
+@mcp.tool()
+def enrich_company_profiles(
+    scope: str,
+    limit: int = 50,
+    only_missing: bool = True,
+    fetch_pages: int = 1,
+    default_region: str = "",
+    default_industry: str = "科技",
+) -> dict[str, Any]:
+    """
+    Public-web enrich full company profile fields for a scope (phone/credit/legal/address/tech/...).
+    Call repeatedly until updated=0. Each call also rewrites the standardized Chinese CSV.
+    """
+    from industry_graph_mcp.company_profile import enrich_scope_profiles
+    from industry_graph_mcp.csv_export import export_scope_csv
+
+    if not default_region and "_" in scope:
+        default_region, default_industry = scope.split("_", 1)
+    store = _store()
+    try:
+        result = enrich_scope_profiles(
+            store,
+            scope=scope,
+            limit=max(1, min(limit, 200)),
+            only_missing=only_missing,
+            fetch_pages=fetch_pages,
+            region=default_region,
+            industry=default_industry or "科技",
+        )
+        result["csv"] = export_scope_csv(store, scope)
+        return result
+    finally:
+        store.close()
+
+
+@mcp.tool()
+def graph_export_csv(scope: str) -> dict[str, Any]:
+    """Export Company nodes in a scope to data/csv/{scope}.csv with Beijing-style Chinese headers."""
+    from industry_graph_mcp.csv_export import export_scope_csv
+
+    store = _store()
+    try:
+        return export_scope_csv(store, scope)
     finally:
         store.close()
 
@@ -185,21 +265,29 @@ def graph_upsert_company(
     scope: str = "default",
     labels_csv: str = "Company",
 ) -> dict[str, Any]:
-    """Upsert a company node. properties_json is a JSON object of fields."""
+    """Upsert a company node with public profile enrichment and CSV rewrite."""
     props = json.loads(properties_json or "{}")
     props.setdefault("name", company_name)
-    from industry_graph_mcp.enrich import enrich_company_props
+    from industry_graph_mcp.company_profile import enrich_company_profile
+    from industry_graph_mcp.schema import normalize_props
 
     region_hint, industry_hint = "", "科技"
     if "_" in scope:
         region_hint, industry_hint = scope.split("_", 1)
-    props = enrich_company_props(
-        company_name, props, default_region=region_hint, default_industry=industry_hint or "科技"
+    props = enrich_company_profile(
+        company_name,
+        normalize_props(props),
+        region=region_hint,
+        industry=industry_hint or "科技",
     )
     labels = [x.strip() for x in labels_csv.split(",") if x.strip()] or ["Company"]
     store = _store()
     try:
-        return store.upsert_node(company_name, labels=labels, properties=props, scope=scope)
+        node = store.upsert_node(company_name, labels=labels, properties=props, scope=scope)
+        from industry_graph_mcp.csv_export import export_scope_csv
+
+        node["csv"] = export_scope_csv(store, scope)
+        return node
     finally:
         store.close()
 
@@ -339,7 +427,10 @@ def graph_import_csv(
             )
             store.upsert_node(name, labels=["Company"], properties=props, scope=scope)
             count += 1
-        return {"imported": count, "scope": scope}
+        from industry_graph_mcp.csv_export import export_scope_csv
+
+        csv_meta = export_scope_csv(store, scope) if count else None
+        return {"imported": count, "scope": scope, "csv": csv_meta}
     finally:
         store.close()
 
