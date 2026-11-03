@@ -29,7 +29,3 @@ irm https://raw.githubusercontent.com/192tt/industry-graph-mcp/master/deploy-dis
 ## 从你的服务器安装
 
 见 `deploy-dist/README.md`。
-
-## 项目协作
-
-见 [学生分工与协作](docs/学生分工与协作.md)。
